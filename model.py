@@ -57,17 +57,26 @@ class Attention(nn.Module):
     def calculate_classification_error(self, X, Y):
         Y = Y.float()
         _, Y_hat, _ = self.forward(X)
-        error = 1. - Y_hat.eq(Y).cpu().float().mean().data[0]
+        error = 1. - Y_hat.eq(Y).cpu().float().mean().data.item()
 
         return error, Y_hat
 
-    def calculate_objective(self, X, Y):
-        Y = Y.float()
+    def calculate_objective(self, X, Y, z_tilde=None, unsupervised_weight=None, labeled=True):
+        # Y_prob is z
         Y_prob, _, A = self.forward(X)
         Y_prob = torch.clamp(Y_prob, min=1e-5, max=1. - 1e-5)
-        neg_log_likelihood = -1. * (Y * torch.log(Y_prob) + (1. - Y) * torch.log(1. - Y_prob))  # negative log bernoulli
+        # temporal ensembling term:
+        loss = 0
+        neg_log_likelihood = 0
+        temporal_ensembling_loss = 0
+        if z_tilde is not None:  # Use temporal ensembling
+            temporal_ensembling_loss = unsupervised_weight * ((Y_prob - z_tilde)**2).mean().reshape((1, 1))
+        if labeled:
+            Y = Y.float()
+            neg_log_likelihood = -1. * (Y * torch.log(Y_prob) + (1. - Y) * torch.log(1. - Y_prob))  # negative log bernoulli
 
-        return neg_log_likelihood, A
+        loss = temporal_ensembling_loss + neg_log_likelihood
+        return loss, A, Y_prob, neg_log_likelihood, temporal_ensembling_loss
 
 class GatedAttention(nn.Module):
     def __init__(self):
