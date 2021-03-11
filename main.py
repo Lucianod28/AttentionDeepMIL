@@ -13,7 +13,6 @@ from torch.utils.tensorboard import SummaryWriter
 from dataloader import MnistBags
 from model import Attention, GatedAttention
 
-writer = SummaryWriter()
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST bags Example')
 parser.add_argument('--epochs', type=int, default=20, metavar='N',
@@ -28,7 +27,7 @@ parser.add_argument('--mean_bag_length', type=int, default=10, metavar='ML',
                     help='average bag length')
 parser.add_argument('--var_bag_length', type=int, default=2, metavar='VL',
                     help='variance of bag length')
-parser.add_argument('--num_bags_train', type=int, default=200, metavar='NTrain',
+parser.add_argument('--num_bags_train', type=int, default=500, metavar='NTrain',
                     help='number of bags in training set')
 parser.add_argument('--num_bags_test', type=int, default=50, metavar='NTest',
                     help='number of bags in test set')
@@ -47,6 +46,7 @@ if args.cuda:
     print('\nGPU is ON!')
 
 print('Load Train and Test Set')
+print('%d epochs, %d train bags, %d test bags, %d mean bag length, %d variance bag length' % (args.epochs, args.num_bags_train, args.num_bags_test, args.mean_bag_length, args.var_bag_length))
 loader_kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 
 train_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
@@ -78,12 +78,18 @@ if args.cuda:
     model.cuda()
 
 optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=args.reg)
-max_unsupervised_weight = 30 * len(train_loader) / 10 / (len(train_loader) - len(test_loader))
+
+# hyperparameters
+percentage_labeled = .75
+max_unsupervised_weight = (1 * (len(train_loader) * percentage_labeled)) / (len(train_loader) - len(test_loader))
+# max_unsupervised_weight = 0 # for supervised only training
+epoch_with_max_rampup = 10 # for rampup function
+alpha = 0.6 # for weighting function
 
 
 def ramp_up_function(epoch, epoch_with_max_rampup=80):
     """ Ramps the value of the weight and learning rate according to the epoch
-        according to the paper
+        according to the paper5
     Arguments:
         {int} epoch
         {int} epoch where the rampup function gets its maximum value
@@ -91,7 +97,9 @@ def ramp_up_function(epoch, epoch_with_max_rampup=80):
         {float} -- rampup value
     """
 
-    if epoch < epoch_with_max_rampup:
+    if epoch == 0:
+        return 0
+    elif epoch < epoch_with_max_rampup:
         p = max(0.0, float(epoch)) / float(epoch_with_max_rampup)
         p = 1.0 - p
         return math.exp(-p*p*5.0)
@@ -99,14 +107,14 @@ def ramp_up_function(epoch, epoch_with_max_rampup=80):
         return 1.0
 
 
-def train(epoch, Z, z_tilde, alpha):
+def train(epoch, Z, z_tilde):
     model.train()
     supervised_loss = 0.
     running_temporal_ensembling_loss = 0.
     train_error = 0.
     for batch_idx, (data, label) in enumerate(train_loader):
-        # labeled = batch_idx % 10 <= 4
-        labeled = True
+        labeled = batch_idx % 100 < 100 * percentage_labeled
+        # labeled = True
 
         bag_label = label[0]
         if args.cuda:
@@ -117,17 +125,15 @@ def train(epoch, Z, z_tilde, alpha):
         # reset gradients
         optimizer.zero_grad()
         # calculate loss and metrics
-        rampup_value = ramp_up_function(epoch, 40)
-        if epoch == 0:
-            unsupervised_weight = 0
-        else:
-            unsupervised_weight = max_unsupervised_weight * rampup_value
+        rampup_value = ramp_up_function(epoch, epoch_with_max_rampup) * max_unsupervised_weight
 
-        loss, _, Y_prob, neg_log_likelihood, temporal_ensembling_loss = model.calculate_objective(data, bag_label, z_tilde[batch_idx], unsupervised_weight, labeled)
+        loss, _, Y_prob, neg_log_likelihood, temporal_ensembling_loss = model.calculate_objective(data, bag_label, z_tilde[batch_idx], rampup_value, labeled)
         Z[batch_idx] = alpha * Z[batch_idx] + (1 - alpha) * Y_prob
 
-        supervised_loss += neg_log_likelihood.item()
-        running_temporal_ensembling_loss += temporal_ensembling_loss.item()
+        if neg_log_likelihood != 0:
+            supervised_loss += neg_log_likelihood.item()
+        if temporal_ensembling_loss != 0:
+            running_temporal_ensembling_loss += temporal_ensembling_loss.item()
         error, _ = model.calculate_classification_error(data, bag_label)
         train_error += error
         # backward pass
@@ -137,15 +143,49 @@ def train(epoch, Z, z_tilde, alpha):
     z_tilde = Z / (1 - alpha ** epoch)
 
     # calculate loss and error for epoch
-    supervised_loss /= len(train_loader)
+    supervised_loss /= len(train_loader) * percentage_labeled
     running_temporal_ensembling_loss /= len(train_loader)
     train_error /= len(train_loader)
 
     #print('Epoch: {}, Loss: {:.4f}, Train error: {:.4f}'.format(epoch, train_loss.cpu().numpy()[0], train_error))
     return supervised_loss, running_temporal_ensembling_loss, train_error
 
+def train_only_supervised(epoch):
+    # percentage_labeled = .2
+    model.train()
+    train_loss = 0.
+    train_error = 0.
+    for batch_idx, (data, label) in enumerate(train_loader):
+        # only train on percentage amount of bag labels
+        # if batch_idx % 100 < 100 - 100 * percentage_labeled:
+        #     continue
+        bag_label = label[0]
+        if args.cuda:
+            data, bag_label = data.cuda(), bag_label.cuda()
+        data, bag_label = Variable(data), Variable(bag_label)
 
-def test(alpha):
+        # reset gradients
+        optimizer.zero_grad()
+        # calculate loss and metrics
+        loss, _ = model.calculate_neg_log_objective(data, bag_label)
+        train_loss += loss.data[0]
+        error, _ = model.calculate_classification_error(data, bag_label)
+        train_error += error
+        # backward pass
+        loss.backward()
+        # step
+        optimizer.step()
+
+    # calculate loss and error for epoch
+    train_loss /= len(train_loader)
+    train_error /= len(train_loader)
+    # train_loss /= len(train_loader) * percentage_labeled
+    # train_error /= len(train_loader) * percentage_labeled
+
+    # print('Epoch: {}, Loss: {:.4f}, Train error: {:.4f}'.format(epoch, train_loss.cpu().numpy()[0], train_error))
+    return train_loss, 0, train_error
+
+def test():
     model.eval()
     test_loss = 0.
     test_error = 0.
@@ -176,14 +216,15 @@ def test(alpha):
 
 if __name__ == "__main__":
     print('Start Training')
+    writer = SummaryWriter()
     # Temporal ensembling variables
     Z = torch.zeros((len(train_loader),))
     z_tilde = torch.zeros((len(train_loader),))
-    alpha = 0.9
     for epoch in range(1, args.epochs + 1):
-        supervised_loss, temporal_ensembling_loss, train_error = train(epoch, Z, z_tilde, alpha)
-        writer.add_scalar("supervised_loss", supervised_loss, epoch)
-        writer.add_scalar("temporal_ensembling_loss", temporal_ensembling_loss, epoch)
-        writer.add_scalar("train_error", train_error, epoch)
+        supervised_loss, temporal_ensembling_loss, train_error = train(epoch, Z, z_tilde)
+        # supervised_loss, temporal_ensembling_loss, train_error = train_only_supervised(epoch)
+        writer.add_scalar("logs/supervised_loss", supervised_loss, epoch)
+        writer.add_scalar("logs/temporal_ensembling_loss", temporal_ensembling_loss, epoch)
+        writer.add_scalar("logs/train_error", train_error, epoch)
     print('Start Testing')
-    test(alpha)
+    test()

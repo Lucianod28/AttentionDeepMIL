@@ -5,6 +5,10 @@ import torch
 import torch.utils.data as data_utils
 from torchvision import datasets, transforms
 
+from six.moves import urllib    
+opener = urllib.request.build_opener()
+opener.addheaders = [('User-agent', 'Mozilla/5.0')]
+urllib.request.install_opener(opener)
 
 class MnistBags(data_utils.Dataset):
     def __init__(self, target_number=9, mean_bag_length=10, var_bag_length=2, num_bag=250, seed=1, train=True):

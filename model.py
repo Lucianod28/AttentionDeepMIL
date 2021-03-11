@@ -78,6 +78,14 @@ class Attention(nn.Module):
         loss = temporal_ensembling_loss + neg_log_likelihood
         return loss, A, Y_prob, neg_log_likelihood, temporal_ensembling_loss
 
+    def calculate_neg_log_objective(self, X, Y):
+        Y = Y.float()
+        Y_prob, _, A = self.forward(X)
+        Y_prob = torch.clamp(Y_prob, min=1e-5, max=1. - 1e-5)
+        neg_log_likelihood = -1. * (Y * torch.log(Y_prob) + (1. - Y) * torch.log(1. - Y_prob))  # negative log bernoulli
+
+        return neg_log_likelihood, A
+
 class GatedAttention(nn.Module):
     def __init__(self):
         super(GatedAttention, self).__init__()
