@@ -47,8 +47,8 @@ if args.cuda:
 
 # hyperparameters
 percentage_labeled = .2
-# max_unsupervised_weight = (1 * (len(train_loader) * percentage_labeled)) / (len(train_loader) - len(test_loader))
-max_unsupervised_weight = .1 # for supervised only training
+# max_unsupervised_weight = (30 * (500* percentage_labeled)) / (500 - 50)
+max_unsupervised_weight = 3
 epoch_with_max_rampup = 60 # for rampup function
 alpha = 0.6 # for weighting function
 
@@ -99,8 +99,7 @@ def train(train_loader, epoch, Z, z_tilde):
         loss, _, Y_prob, neg_log_likelihood, temporal_ensembling_loss = model.calculate_objective(data, bag_label, z_tilde[batch_idx], unsupervised_weight, labeled)
         total_loss += loss
 
-        # update temporal ensembling variables
-        Y_probs[batch_idx] = Y_prob
+        Y_probs[batch_idx] = Y_prob.detach() # save for temporal ensembling later
         # Z[batch_idx] = alpha * Z[batch_idx] + (1 - alpha) * Y_prob
         # z_tilde[batch_idx] = Z[batch_idx] / (1 - alpha ** epoch)
 
@@ -117,6 +116,7 @@ def train(train_loader, epoch, Z, z_tilde):
     # step
     optimizer.step()
     
+    # update temporal ensembling variables
     Z = alpha * Z + (1 - alpha) * Y_probs
     z_tilde = Z / (1 - alpha ** epoch)
 
@@ -224,9 +224,12 @@ if __name__ == "__main__":
     # Temporal ensembling variables
     Z = torch.zeros(len(train_loader))
     z_tilde = torch.zeros(len(train_loader))
+    print('max unsupervised weight is:', max_unsupervised_weight)
     for epoch in range(1, args.epochs + 1):
         supervised_loss, temporal_ensembling_loss, train_error, Z, z_tilde = train(train_loader, epoch, Z, z_tilde)
         # supervised_loss, temporal_ensembling_loss, train_error = train_only_supervised(train_loader, epoch)
+        print('Z:', Z)
+        print('z_tilde:', z_tilde)
         writer.add_scalar("logs/supervised_loss", supervised_loss, epoch)
         writer.add_scalar("logs/temporal_ensembling_loss", temporal_ensembling_loss, epoch)
         writer.add_scalar("logs/train_error", train_error, epoch)

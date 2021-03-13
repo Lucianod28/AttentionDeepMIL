@@ -71,7 +71,7 @@ class Attention(nn.Module):
         loss = 0
         neg_log_likelihood = 0
         temporal_ensembling_loss = 0
-        if z_tilde is not None:  # Use temporal ensembling
+        if z_tilde is not None:  # Use temporal ensembling for train
             temporal_ensembling_loss = unsupervised_weight * ((Y_prob - z_tilde)**2).mean().reshape((1, 1))
             # temporal_ensembling_loss = unsupervised_weight * ((Y_prob - z_tilde)**2).reshape((1, 1))
         if labeled:
