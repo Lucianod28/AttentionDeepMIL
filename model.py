@@ -73,6 +73,7 @@ class Attention(nn.Module):
         temporal_ensembling_loss = 0
         if z_tilde is not None:  # Use temporal ensembling
             temporal_ensembling_loss = unsupervised_weight * ((Y_prob - z_tilde)**2).mean().reshape((1, 1))
+            # temporal_ensembling_loss = unsupervised_weight * ((Y_prob - z_tilde)**2).reshape((1, 1))
         if labeled:
             Y = Y.float()
             neg_log_likelihood = -1. * (Y * torch.log(Y_prob) + (1. - Y) * torch.log(1. - Y_prob))  # negative log bernoulli

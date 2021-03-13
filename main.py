@@ -46,9 +46,9 @@ if args.cuda:
     print('\nGPU is ON!')
 
 # hyperparameters
-percentage_labeled = .1
+percentage_labeled = .2
 # max_unsupervised_weight = (1 * (len(train_loader) * percentage_labeled)) / (len(train_loader) - len(test_loader))
-max_unsupervised_weight = .2125 # for supervised only training
+max_unsupervised_weight = .1 # for supervised only training
 epoch_with_max_rampup = 60 # for rampup function
 alpha = 0.6 # for weighting function
 
@@ -78,9 +78,12 @@ def train(train_loader, epoch, Z, z_tilde):
     supervised_loss = 0.
     running_temporal_ensembling_loss = 0.
     train_error = 0.
+    Y_probs = torch.zeros(len(train_loader))
     # reset gradients
     optimizer.zero_grad()
+    total_loss = 0.
     for batch_idx, (data, label) in enumerate(train_loader):
+        # print(batch_idx)
         labeled = batch_idx % 100 < 100 * percentage_labeled
         # labeled = True
 
@@ -91,10 +94,15 @@ def train(train_loader, epoch, Z, z_tilde):
         bag_label = Variable(bag_label)
 
         # calculate loss and metrics
-        rampup_value = ramp_up_function(epoch, epoch_with_max_rampup) * max_unsupervised_weight
+        unsupervised_weight = ramp_up_function(epoch, epoch_with_max_rampup) * max_unsupervised_weight
 
-        loss, _, Y_prob, neg_log_likelihood, temporal_ensembling_loss = model.calculate_objective(data, bag_label, z_tilde[batch_idx], rampup_value, labeled)
-        Z[batch_idx] = alpha * Z[batch_idx] + (1 - alpha) * Y_prob
+        loss, _, Y_prob, neg_log_likelihood, temporal_ensembling_loss = model.calculate_objective(data, bag_label, z_tilde[batch_idx], unsupervised_weight, labeled)
+        total_loss += loss
+
+        # update temporal ensembling variables
+        Y_probs[batch_idx] = Y_prob
+        # Z[batch_idx] = alpha * Z[batch_idx] + (1 - alpha) * Y_prob
+        # z_tilde[batch_idx] = Z[batch_idx] / (1 - alpha ** epoch)
 
         if neg_log_likelihood != 0:
             supervised_loss += neg_log_likelihood.item()
@@ -103,10 +111,13 @@ def train(train_loader, epoch, Z, z_tilde):
         error, _ = model.calculate_classification_error(data, bag_label)
         train_error += error
         # backward pass
-        loss.backward()
+        # loss.backward()
+    total_loss /= len(train_loader)
+    total_loss.backward()
     # step
     optimizer.step()
-        
+    
+    Z = alpha * Z + (1 - alpha) * Y_probs
     z_tilde = Z / (1 - alpha ** epoch)
 
     # calculate loss and error for epoch
@@ -115,7 +126,7 @@ def train(train_loader, epoch, Z, z_tilde):
     train_error /= len(train_loader)
 
     #print('Epoch: {}, Loss: {:.4f}, Train error: {:.4f}'.format(epoch, train_loss.cpu().numpy()[0], train_error))
-    return supervised_loss, running_temporal_ensembling_loss, train_error
+    return supervised_loss, running_temporal_ensembling_loss, train_error, Z, z_tilde
 
 def train_only_supervised(train_loader, epoch):
     model.train()
@@ -187,7 +198,7 @@ if __name__ == "__main__":
                                                 seed=args.seed,
                                                 train=True),
                                         batch_size=1,
-                                        shuffle=True,
+                                        shuffle=False,
                                         **loader_kwargs)
     test_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
                                                 mean_bag_length=args.mean_bag_length,
@@ -211,10 +222,10 @@ if __name__ == "__main__":
     print('Start Training')
     writer = SummaryWriter()
     # Temporal ensembling variables
-    Z = torch.zeros((len(train_loader),))
-    z_tilde = torch.zeros((len(train_loader),))
+    Z = torch.zeros(len(train_loader))
+    z_tilde = torch.zeros(len(train_loader))
     for epoch in range(1, args.epochs + 1):
-        supervised_loss, temporal_ensembling_loss, train_error = train(train_loader, epoch, Z, z_tilde)
+        supervised_loss, temporal_ensembling_loss, train_error, Z, z_tilde = train(train_loader, epoch, Z, z_tilde)
         # supervised_loss, temporal_ensembling_loss, train_error = train_only_supervised(train_loader, epoch)
         writer.add_scalar("logs/supervised_loss", supervised_loss, epoch)
         writer.add_scalar("logs/temporal_ensembling_loss", temporal_ensembling_loss, epoch)

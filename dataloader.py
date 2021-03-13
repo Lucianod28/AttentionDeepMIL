@@ -99,7 +99,7 @@ if __name__ == "__main__":
                                                    seed=1,
                                                    train=True),
                                          batch_size=1,
-                                         shuffle=True)
+                                         shuffle=False)
 
     test_loader = data_utils.DataLoader(MnistBags(target_number=9,
                                                   mean_bag_length=10,
