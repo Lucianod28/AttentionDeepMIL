@@ -22,6 +22,7 @@ class Attention(nn.Module):
         self.feature_extractor_part2 = nn.Sequential(
             nn.Linear(50 * 4 * 4, self.L),
             nn.ReLU(),
+            nn.Dropout(0.5)
         )
 
         self.attention = nn.Sequential(
@@ -31,6 +32,7 @@ class Attention(nn.Module):
         )
 
         self.classifier = nn.Sequential(
+            nn.Dropout(0.5),
             nn.Linear(self.L*self.K, 1),
             nn.Sigmoid()
         )

@@ -19,7 +19,7 @@ parser.add_argument('--epochs', type=int, default=20, metavar='N',
                     help='number of epochs to train (default: 20)')
 parser.add_argument('--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
-parser.add_argument('--reg', type=float, default=10e-5, metavar='R',
+parser.add_argument('--reg', type=float, default=1e-3, metavar='R',
                     help='weight decay')
 parser.add_argument('--target_number', type=int, default=9, metavar='T',
                     help='bags have a positive labels if they contain at least one 9')
@@ -45,51 +45,17 @@ if args.cuda:
     torch.cuda.manual_seed(args.seed)
     print('\nGPU is ON!')
 
-print('Load Train and Test Set')
-print('%d epochs, %d train bags, %d test bags, %d mean bag length, %d variance bag length' % (args.epochs, args.num_bags_train, args.num_bags_test, args.mean_bag_length, args.var_bag_length))
-loader_kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-
-train_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
-                                               mean_bag_length=args.mean_bag_length,
-                                               var_bag_length=args.var_bag_length,
-                                               num_bag=args.num_bags_train,
-                                               seed=args.seed,
-                                               train=True),
-                                     batch_size=1,
-                                     shuffle=True,
-                                     **loader_kwargs)
-
-test_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
-                                              mean_bag_length=args.mean_bag_length,
-                                              var_bag_length=args.var_bag_length,
-                                              num_bag=args.num_bags_test,
-                                              seed=args.seed,
-                                              train=False),
-                                    batch_size=1,
-                                    shuffle=False,
-                                    **loader_kwargs)
-
-print('Init Model')
-if args.model=='attention':
-    model = Attention()
-elif args.model=='gated_attention':
-    model = GatedAttention()
-if args.cuda:
-    model.cuda()
-
-optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=args.reg)
-
 # hyperparameters
-percentage_labeled = .75
-max_unsupervised_weight = (1 * (len(train_loader) * percentage_labeled)) / (len(train_loader) - len(test_loader))
-# max_unsupervised_weight = 0 # for supervised only training
-epoch_with_max_rampup = 10 # for rampup function
+percentage_labeled = .1
+# max_unsupervised_weight = (1 * (len(train_loader) * percentage_labeled)) / (len(train_loader) - len(test_loader))
+max_unsupervised_weight = .2125 # for supervised only training
+epoch_with_max_rampup = 60 # for rampup function
 alpha = 0.6 # for weighting function
 
 
 def ramp_up_function(epoch, epoch_with_max_rampup=80):
     """ Ramps the value of the weight and learning rate according to the epoch
-        according to the paper5
+        according to the paper
     Arguments:
         {int} epoch
         {int} epoch where the rampup function gets its maximum value
@@ -107,11 +73,13 @@ def ramp_up_function(epoch, epoch_with_max_rampup=80):
         return 1.0
 
 
-def train(epoch, Z, z_tilde):
+def train(train_loader, epoch, Z, z_tilde):
     model.train()
     supervised_loss = 0.
     running_temporal_ensembling_loss = 0.
     train_error = 0.
+    # reset gradients
+    optimizer.zero_grad()
     for batch_idx, (data, label) in enumerate(train_loader):
         labeled = batch_idx % 100 < 100 * percentage_labeled
         # labeled = True
@@ -122,8 +90,6 @@ def train(epoch, Z, z_tilde):
         data = Variable(data)
         bag_label = Variable(bag_label)
 
-        # reset gradients
-        optimizer.zero_grad()
         # calculate loss and metrics
         rampup_value = ramp_up_function(epoch, epoch_with_max_rampup) * max_unsupervised_weight
 
@@ -138,8 +104,9 @@ def train(epoch, Z, z_tilde):
         train_error += error
         # backward pass
         loss.backward()
-        # step
-        optimizer.step()
+    # step
+    optimizer.step()
+        
     z_tilde = Z / (1 - alpha ** epoch)
 
     # calculate loss and error for epoch
@@ -150,15 +117,11 @@ def train(epoch, Z, z_tilde):
     #print('Epoch: {}, Loss: {:.4f}, Train error: {:.4f}'.format(epoch, train_loss.cpu().numpy()[0], train_error))
     return supervised_loss, running_temporal_ensembling_loss, train_error
 
-def train_only_supervised(epoch):
-    # percentage_labeled = .2
+def train_only_supervised(train_loader, epoch):
     model.train()
     train_loss = 0.
     train_error = 0.
     for batch_idx, (data, label) in enumerate(train_loader):
-        # only train on percentage amount of bag labels
-        # if batch_idx % 100 < 100 - 100 * percentage_labeled:
-        #     continue
         bag_label = label[0]
         if args.cuda:
             data, bag_label = data.cuda(), bag_label.cuda()
@@ -179,13 +142,11 @@ def train_only_supervised(epoch):
     # calculate loss and error for epoch
     train_loss /= len(train_loader)
     train_error /= len(train_loader)
-    # train_loss /= len(train_loader) * percentage_labeled
-    # train_error /= len(train_loader) * percentage_labeled
 
     # print('Epoch: {}, Loss: {:.4f}, Train error: {:.4f}'.format(epoch, train_loss.cpu().numpy()[0], train_error))
     return train_loss, 0, train_error
 
-def test():
+def test(test_loader):
     model.eval()
     test_loss = 0.
     test_error = 0.
@@ -212,19 +173,56 @@ def test():
     test_loss /= len(test_loader)
 
     print('\nTest Set, Loss: {:.4f}, Test error: {:.4f}'.format(test_loss.cpu().numpy()[0], test_error))
+    return test_error, test_loss
 
 
 if __name__ == "__main__":
+    print('Load Train and Test Set')
+    print('%d epochs, %d train bags, %d test bags, %d mean bag length, %d variance bag length' % (args.epochs, args.num_bags_train, args.num_bags_test, args.mean_bag_length, args.var_bag_length))
+    loader_kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+    train_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
+                                                mean_bag_length=args.mean_bag_length,
+                                                var_bag_length=args.var_bag_length,
+                                                num_bag=args.num_bags_train,
+                                                seed=args.seed,
+                                                train=True),
+                                        batch_size=1,
+                                        shuffle=True,
+                                        **loader_kwargs)
+    test_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
+                                                mean_bag_length=args.mean_bag_length,
+                                                var_bag_length=args.var_bag_length,
+                                                num_bag=args.num_bags_test,
+                                                seed=args.seed,
+                                                train=False),
+                                        batch_size=1,
+                                        shuffle=False,
+                                        **loader_kwargs)
+
+    print('Init Model')
+    if args.model=='attention':
+        model = Attention()
+    elif args.model=='gated_attention':
+        model = GatedAttention()
+    if args.cuda:
+        model.cuda()
+
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=args.reg)
     print('Start Training')
     writer = SummaryWriter()
     # Temporal ensembling variables
     Z = torch.zeros((len(train_loader),))
     z_tilde = torch.zeros((len(train_loader),))
     for epoch in range(1, args.epochs + 1):
-        supervised_loss, temporal_ensembling_loss, train_error = train(epoch, Z, z_tilde)
-        # supervised_loss, temporal_ensembling_loss, train_error = train_only_supervised(epoch)
+        supervised_loss, temporal_ensembling_loss, train_error = train(train_loader, epoch, Z, z_tilde)
+        # supervised_loss, temporal_ensembling_loss, train_error = train_only_supervised(train_loader, epoch)
         writer.add_scalar("logs/supervised_loss", supervised_loss, epoch)
         writer.add_scalar("logs/temporal_ensembling_loss", temporal_ensembling_loss, epoch)
         writer.add_scalar("logs/train_error", train_error, epoch)
-    print('Start Testing')
-    test()
+
+        print('Start Testing')
+        test_error, test_loss = test(test_loader)
+        writer.add_scalar("logs/test_loss", test_loss, epoch)
+        writer.add_scalar("logs/test_error", test_error, epoch)
+
+    
