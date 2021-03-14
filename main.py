@@ -9,9 +9,11 @@ import torch.utils.data as data_utils
 import torch.optim as optim
 from torch.autograd import Variable
 from torch.utils.tensorboard import SummaryWriter
+from torchvision import transforms
 
 from dataloader import MnistBags
-from model import Attention, GatedAttention
+from breast_cancer_dataloader import BreastCancerBags
+from model import Attention, GatedAttention, CancerAttention
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST bags Example')
@@ -35,6 +37,8 @@ parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
+parser.add_argument('--cancer', action='store_true', default=False,
+                    help='Use the breast cancer dataset')
 parser.add_argument('--model', type=str, default='attention', help='Choose b/w attention and gated_attention')
 
 args = parser.parse_args()
@@ -115,7 +119,7 @@ def train(train_loader, epoch, Z, z_tilde):
     total_loss.backward()
     # step
     optimizer.step()
-    
+
     # update temporal ensembling variables
     Z = alpha * Z + (1 - alpha) * Y_probs
     z_tilde = Z / (1 - alpha ** epoch)
@@ -191,29 +195,37 @@ if __name__ == "__main__":
     print('Load Train and Test Set')
     print('%d epochs, %d train bags, %d test bags, %d mean bag length, %d variance bag length' % (args.epochs, args.num_bags_train, args.num_bags_test, args.mean_bag_length, args.var_bag_length))
     loader_kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-    train_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
-                                                mean_bag_length=args.mean_bag_length,
-                                                var_bag_length=args.var_bag_length,
-                                                num_bag=args.num_bags_train,
-                                                seed=args.seed,
-                                                train=True),
-                                        batch_size=1,
-                                        shuffle=False,
-                                        **loader_kwargs)
-    test_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
-                                                mean_bag_length=args.mean_bag_length,
-                                                var_bag_length=args.var_bag_length,
-                                                num_bag=args.num_bags_test,
-                                                seed=args.seed,
-                                                train=False),
-                                        batch_size=1,
-                                        shuffle=False,
-                                        **loader_kwargs)
+    if args.cancer:
+        train_loader = data_utils.DataLoader(BreastCancerBags(transforms.ToTensor(), True))
+        test_loader = data_utils.DataLoader(BreastCancerBags(transforms.ToTensor(), False))
+    else:
+        train_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
+                                                    mean_bag_length=args.mean_bag_length,
+                                                    var_bag_length=args.var_bag_length,
+                                                    num_bag=args.num_bags_train,
+                                                    seed=args.seed,
+                                                    train=True),
+                                            batch_size=1,
+                                            shuffle=False,
+                                            **loader_kwargs)
+        test_loader = data_utils.DataLoader(MnistBags(target_number=args.target_number,
+                                                    mean_bag_length=args.mean_bag_length,
+                                                    var_bag_length=args.var_bag_length,
+                                                    num_bag=args.num_bags_test,
+                                                    seed=args.seed,
+                                                    train=False),
+                                            batch_size=1,
+                                            shuffle=False,
+                                            **loader_kwargs)
 
     print('Init Model')
     if args.model=='attention':
-        model = Attention()
+        if args.cancer:
+            model = CancerAttention()
+        else:
+            model = Attention()
     elif args.model=='gated_attention':
+        assert not args.cancer
         model = GatedAttention()
     if args.cuda:
         model.cuda()
@@ -228,8 +240,6 @@ if __name__ == "__main__":
     for epoch in range(1, args.epochs + 1):
         supervised_loss, temporal_ensembling_loss, train_error, Z, z_tilde = train(train_loader, epoch, Z, z_tilde)
         # supervised_loss, temporal_ensembling_loss, train_error = train_only_supervised(train_loader, epoch)
-        print('Z:', Z)
-        print('z_tilde:', z_tilde)
         writer.add_scalar("logs/supervised_loss", supervised_loss, epoch)
         writer.add_scalar("logs/temporal_ensembling_loss", temporal_ensembling_loss, epoch)
         writer.add_scalar("logs/train_error", train_error, epoch)
@@ -239,4 +249,4 @@ if __name__ == "__main__":
         writer.add_scalar("logs/test_loss", test_loss, epoch)
         writer.add_scalar("logs/test_error", test_error, epoch)
 
-    
+
