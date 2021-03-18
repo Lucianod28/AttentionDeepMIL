@@ -38,7 +38,14 @@ class BreastCancerBags(data_utils.Dataset):
                     upper = j * CROP_LENGTH
                     right = (i + 1) * CROP_WIDTH
                     lower = (j + 1) * CROP_LENGTH
-                    cropped.append(image.crop((left, upper, right, lower)))
+                    crop = image.crop((left, upper, right, lower))
+                    data = crop.convert("RGBA").getdata()
+                    white_count = 0
+                    for pixel in data:
+                        if pixel[0] > 200 and pixel[1] > 200 and pixel[2] > 200:
+                            white_count += 1
+                    if white_count < 0.75 * CROP_WIDTH * CROP_LENGTH:
+                        cropped.append(crop)
             image_crops.append(cropped)
         # check right image sizes
         for image in image_crops:
@@ -46,7 +53,7 @@ class BreastCancerBags(data_utils.Dataset):
                 assert (CROP_WIDTH, CROP_LENGTH) == crop.size
 
         # put the images into DataLoader
-        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(image_crops, malignant, test_size=0.2, random_state=42)
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(image_crops, malignant, test_size=0.3, random_state=12)
 
     def __len__(self):
         if self.train:

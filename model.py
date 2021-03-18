@@ -98,16 +98,16 @@ class CancerAttention(nn.Module):
         self.K = 1
 
         self.feature_extractor_part1 = nn.Sequential(
-            nn.Conv2d(3, 36, kernel_size=4),
+            nn.Conv2d(3, 18, kernel_size=4),
             nn.ReLU(),
             nn.MaxPool2d(2, stride=2),
-            nn.Conv2d(36, 48, kernel_size=3),
+            nn.Conv2d(18, 24, kernel_size=3),
             nn.ReLU(),
             nn.MaxPool2d(2, stride=2)
         )
 
         self.feature_extractor_part2 = nn.Sequential(
-            nn.Linear(1161216, self.L),
+            nn.Linear(580608//672, self.L),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(self.L, self.L),
@@ -131,7 +131,7 @@ class CancerAttention(nn.Module):
         x = x.squeeze(0)
 
         H = self.feature_extractor_part1(x)
-        H = H.view(-1, 1161216)
+        H = H.view(-1, 580608//672)
         H = self.feature_extractor_part2(H)  # NxL
 
         A = self.attention(H)  # NxK
